@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Multi-Taxi RL Visualizer</title>
+  <style>
+    body { margin: 0; font-family: Arial, sans-serif; background: #111; color: #eee; }
+    .topbar { display: flex; align-items: center; justify-content: space-between; padding: 12px 18px; background: #1f1f2f; }
+    .topbar h1 { margin: 0; font-size: 1.1rem; }
+    .controls { display: flex; gap: 10px; }
+    .controls button { background: #2a6df0; color: white; border: none; border-radius: 6px; padding: 10px 14px; cursor: pointer; font-size: 0.95rem; }
+    .controls button:disabled { background: #455a7f; cursor: not-allowed; }
+    .controls button.secondary { background: #343b59; }
+    canvas { display: block; margin: 14px auto; background: #080b13; border: 3px solid #202438; border-radius: 18px; }
+    .stats { display: flex; justify-content: center; gap: 24px; flex-wrap: wrap; padding: 10px 18px; background: #151935; }
+    .stat { min-width: 140px; padding: 10px 14px; background: rgba(255,255,255,0.05); border-radius: 12px; }
+    .legend { display: flex; justify-content: center; gap: 16px; padding: 10px 18px; flex-wrap: wrap; }
+    .tag { display: inline-flex; align-items: center; gap: 8px; background: rgba(255,255,255,0.06); padding: 8px 10px; border-radius: 999px; }
+    .chip { width: 14px; height: 14px; border-radius: 999px; display: inline-block; }
+  </style>
+</head>
+<body>
+  <div class="topbar">
+    <h1>Multi-Taxi RL Web Visualizer</h1>
+    <div class="controls">
+      <button id="playBtn">Play</button>
+      <button id="pauseBtn" class="secondary">Pause</button>
+      <button id="stepBtn" class="secondary">Step</button>
+      <button id="resetBtn" class="secondary">Reset</button>
+    </div>
+  </div>
+  <canvas id="scene" width="700" height="700"></canvas>
+  <div class="stats">
+    <div class="stat"><strong>Step</strong><div id="step">0</div></div>
+    <div class="stat"><strong>Delivered</strong><div id="delivered">0</div></div>
+    <div class="stat"><strong>State</strong><div id="status">running</div></div>
+    <div class="stat"><strong>Policy</strong><div id="policy">-</div></div>
+    <div class="stat"><strong>Taxis</strong><div id="taxiCount">0</div></div>
+    <div class="stat"><strong>Passengers</strong><div id="passengerCount">0</div></div>
+  </div>
+  <div class="legend">
+    <div class="tag"><span class="chip" style="background:#3ea1ff"></span>Taxi</div>
+    <div class="tag"><span class="chip" style="background:#ffa530"></span>Waiting Passenger</div>
+    <div class="tag"><span class="chip" style="background:#fe4a71"></span>Carrying</div>
+    <div class="tag"><span class="chip" style="background:#888888"></span>Delivered</div>
+    <div class="tag"><span class="chip" style="background:#4bc964"></span>Destination</div>
+    <div class="tag"><span class="chip" style="background:#7a5cff"></span>Hotspot</div>
+    <div class="tag"><span class="chip" style="background:#5c5f67"></span>Wall</div>
+  </div>
+  <script>
+    const canvas = document.getElementById('scene');
+    const ctx = canvas.getContext('2d');
+    const playBtn = document.getElementById('playBtn');
+    const pauseBtn = document.getElementById('pauseBtn');
+    const stepBtn = document.getElementById('stepBtn');
+    const resetBtn = document.getElementById('resetBtn');
+    const stepEl = document.getElementById('step');
+    const deliveredEl = document.getElementById('delivered');
+    const statusEl = document.getElementById('status');
+    const policyEl = document.getElementById('policy');
+    const taxiCountEl = document.getElementById('taxiCount');
+    const passengerCountEl = document.getElementById('passengerCount');
+
+    let state = null;
+    let polling = null;
+
+    async function fetchState() {
+      try {
+        const res = await fetch('/state');
+        if (!res.ok) {
+          console.error('Failed to fetch state:', res.status, res.statusText);
+          return;
+        }
+        state = await res.json();
+        renderScene();
+        updateStats();
+      } catch (error) {
+        console.error('Error fetching state:', error);
+      }
+    }
+
+    async function control(cmd) {
+      try {
+        console.log('Sending control command:', cmd);
+        const res = await fetch(`/control?cmd=${cmd}`);
+        if (!res.ok) {
+          console.error('Failed to send control:', res.status, res.statusText);
+          return;
+        }
+        const result = await res.json();
+        state = result.state;
+        renderScene();
+        updateStats();
+      } catch (error) {
+        console.error('Error sending control:', error);
+      }
+    }
+
+    function updateStats() {
+      if (!state) return;
+      stepEl.textContent = state.step_count;
+      deliveredEl.textContent = `${state.delivered_count}/${state.n_passengers}`;
+      statusEl.textContent = state.done ? 'done' : (state.playing ? 'playing' : 'paused');
+      policyEl.textContent = state.policy || '-';
+      taxiCountEl.textContent = state.n_taxis;
+      passengerCountEl.textContent = state.n_passengers;
+      playBtn.disabled = Boolean(state.done || state.playing);
+      pauseBtn.disabled = Boolean(state.done || !state.playing);
+      stepBtn.disabled = Boolean(state.done);
+    }
+
+    function renderScene() {
+      if (!state) return;
+      const rows = state.n_rows;
+      const cols = state.n_cols;
+      const cellSize = Math.min(canvas.width / cols, canvas.height / rows);
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.fillStyle = '#0d1323';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      for (let r = 0; r < rows; r++) {
+        for (let c = 0; c < cols; c++) {
+          const x = c * cellSize;
+          const y = r * cellSize;
+          const type = state.grid[r][c];
+          if (type === 1) ctx.fillStyle = '#5c5f67';
+          else if (type === 2) ctx.fillStyle = '#283d75';
+          else if (type === 3) ctx.fillStyle = '#4936be';
+          else ctx.fillStyle = '#151c2d';
+          ctx.fillRect(x, y, cellSize, cellSize);
+          ctx.strokeStyle = '#1b2341';
+          ctx.strokeRect(x, y, cellSize, cellSize);
+        }
+      }
+
+      for (const passenger of state.passengers) {
+        const [pr, pc] = passenger.cell;
+        const x = pc * cellSize + cellSize * 0.12;
+        const y = pr * cellSize + cellSize * 0.12;
+        
+        if (passenger.status === 'delivered') {
+          ctx.fillStyle = '#888888'; // 灰色表示已交付
+        } else if (passenger.status === 'in_taxi') {
+          ctx.fillStyle = '#fe4a71'; // 红色表示在车内
+        } else {
+          ctx.fillStyle = '#ffa530'; // 橙色表示等待中
+        }
+        
+        ctx.beginPath();
+        ctx.arc(x + cellSize * 0.38, y + cellSize * 0.38, cellSize * 0.25, 0, Math.PI * 2);
+        ctx.fill();
+        
+        // 添加乘客ID标签
+        ctx.fillStyle = '#ffffff';
+        ctx.font = `${Math.round(cellSize * 0.2)}px Arial`;
+        ctx.textAlign = 'center';
+        ctx.fillText(passenger.id.toString(), x + cellSize * 0.38, y + cellSize * 0.45);
+      }
+
+      for (const passenger of state.passengers) {
+        if (passenger.status === 'delivered') continue;
+        const [dr, dc] = passenger.dest;
+        const x = dc * cellSize + cellSize * 0.2;
+        const y = dr * cellSize + cellSize * 0.2;
+        ctx.strokeStyle = '#4bc964';
+        ctx.lineWidth = 2;
+        ctx.strokeRect(x, y, cellSize * 0.6, cellSize * 0.6);
+      }
+
+      for (const taxi of state.taxi_positions) {
+        const [tr, tc] = taxi.pos;
+        const x = tc * cellSize + cellSize * 0.1;
+        const y = tr * cellSize + cellSize * 0.1;
+        ctx.fillStyle = taxi.carrying ? '#3ea1ff' : '#33d8ff';
+        ctx.beginPath();
+        ctx.roundRect(x, y, cellSize * 0.8, cellSize * 0.8, 12);
+        ctx.fill();
+        ctx.fillStyle = '#ffffff';
+        ctx.font = `${Math.round(cellSize * 0.4)}px Arial`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        const taxiLabel = taxi.id != null ? taxi.id.toString().replace('taxi_', '') : '';
+        ctx.fillText(taxiLabel, x + cellSize * 0.4, y + cellSize * 0.45);
+      }
+    }
+
+
+
+    playBtn.addEventListener('click', async () => { await control('play'); });
+    pauseBtn.addEventListener('click', async () => { await control('pause'); });
+    stepBtn.addEventListener('click', async () => { await control('step'); });
+    resetBtn.addEventListener('click', async () => { await control('reset'); });
+
+    async function startPolling() {
+      await fetchState();
+      polling = setInterval(fetchState, 250);
+    }
+    startPolling();
+  </script>
+</body>
+</html>
